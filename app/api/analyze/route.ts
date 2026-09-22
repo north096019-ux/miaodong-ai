@@ -1,4 +1,7 @@
-import { env } from "cloudflare:workers";
+const env: { DB?: any; UPLOADS?: any; OPENAI_API_KEY?: string; OPENAI_ANALYSIS_MODEL?: string } = {
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  OPENAI_ANALYSIS_MODEL: process.env.OPENAI_ANALYSIS_MODEL,
+};
 
 type Analysis = {
   intention: { label: string; confidence: number; evidence: string[] };

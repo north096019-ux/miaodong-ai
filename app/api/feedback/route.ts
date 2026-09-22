@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+const env: { DB?: any } = {};
 
 export async function POST(request: Request) {
   const body = (await request.json()) as { reportId?: string; helpful?: boolean; note?: string };

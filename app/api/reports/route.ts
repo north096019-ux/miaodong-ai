@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+const env: { DB?: any } = {};
 
 export async function GET() {
   if (!env.DB) return Response.json({ reports: [] });
