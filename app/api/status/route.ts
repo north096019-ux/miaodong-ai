@@ -1,5 +1,5 @@
-const env = { OPENAI_API_KEY: process.env.OPENAI_API_KEY };
+const env = { GEMINI_API_KEY: process.env.GEMINI_API_KEY };
 
 export async function GET() {
-  return Response.json({ mode: env.OPENAI_API_KEY ? "live" : "demo" });
+  return Response.json({ mode: env.GEMINI_API_KEY ? "live" : "demo" });
 }

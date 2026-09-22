@@ -1,6 +1,6 @@
-const env: { DB?: any; UPLOADS?: any; OPENAI_API_KEY?: string; OPENAI_ANALYSIS_MODEL?: string } = {
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  OPENAI_ANALYSIS_MODEL: process.env.OPENAI_ANALYSIS_MODEL,
+const env: { DB?: any; UPLOADS?: any; GEMINI_API_KEY?: string; GEMINI_ANALYSIS_MODEL?: string } = {
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  GEMINI_ANALYSIS_MODEL: process.env.GEMINI_ANALYSIS_MODEL,
 };
 
 type Analysis = {
@@ -25,30 +25,40 @@ function demoAnalysis(kind: string, context: string, features: string): Analysis
   };
 }
 
-async function liveAnalysis(preview: string, kind: string, context: string, features: string): Promise<Analysis> {
-  const content: Array<Record<string, unknown>> = [{ type: "input_text", text: `你是谨慎的猫咪行为观察助手。素材类型：${kind}。场景：${context || "未提供"}。浏览器提取的声音/媒体特征：${features || "无"}。只描述可观察证据与可能性，不诊断疾病，不把猫叫翻译成确定的人话。` }];
-  if (preview.startsWith("data:image/")) content.push({ type: "input_image", image_url: preview, detail: "high" });
-  const response = await fetch("https://api.openai.com/v1/responses", {
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function geminiLiveAnalysis(preview: string, file: File, context: string, features: string): Promise<Analysis> {
+  const mimeType = file.type || "application/octet-stream";
+  const parts: Array<Record<string, unknown>> = [{ text: `请用简体中文输出 JSON 格式的猫咪观察报告，字段为 intention、emotion、health、summary、recommendations、disclaimer。intention 和 emotion 包含 label、confidence、evidence；health 包含 level、observations。素材类型：${mimeType}。场景：${context || "未提供"}。浏览器提取的声音或媒体特征：${features || "无"}。如果提供了猫叫音频，可以分析可听到的声音特征和可能意图，但必须明确是不确定推测。只描述可见或可听证据，不诊断疾病，不把猫叫翻译成确定的人话；health 只提示可见异常。confidence 是模型主观匹配分数，不是医学概率。` }];
+  if (mimeType.startsWith("audio/")) {
+    parts.push({ inline_data: { mime_type: mimeType, data: bytesToBase64(new Uint8Array(await file.arrayBuffer())) } });
+  } else if (preview.startsWith("data:image/")) {
+    const match = preview.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/);
+    if (match) parts.push({ inline_data: { mime_type: match[1], data: match[2] } });
+  }
+
+  const model = env.GEMINI_ANALYSIS_MODEL || "gemini-3.8-flash";
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: "POST",
-    headers: { "Authorization": `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: env.OPENAI_ANALYSIS_MODEL || "gpt-5.6-terra", store: false,
-      instructions: "以中文输出。必须区分观察、推测和无法判断，健康部分只做可见异常提示。",
-      input: [{ role: "user", content }],
-      text: { format: { type: "json_schema", name: "cat_observation", strict: true, schema: {
-        type: "object", additionalProperties: false,
-        properties: {
-          intention: { type: "object", additionalProperties: false, properties: { label: { type: "string" }, confidence: { type: "number" }, evidence: { type: "array", items: { type: "string" } } }, required: ["label", "confidence", "evidence"] },
-          emotion: { type: "object", additionalProperties: false, properties: { label: { type: "string" }, confidence: { type: "number" }, evidence: { type: "array", items: { type: "string" } } }, required: ["label", "confidence", "evidence"] },
-          health: { type: "object", additionalProperties: false, properties: { level: { type: "string", enum: ["未见明显异常", "建议持续观察", "建议尽快就医"] }, observations: { type: "array", items: { type: "string" } } }, required: ["level", "observations"] },
-          summary: { type: "string" }, recommendations: { type: "array", items: { type: "string" } }, disclaimer: { type: "string" }
-        }, required: ["intention", "emotion", "health", "summary", "recommendations", "disclaimer"]
-      } } }
-    })
+    headers: { "x-goog-api-key": env.GEMINI_API_KEY!, "Content-Type": "application/json" },
+    body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json" } }),
   });
-  if (!response.ok) throw new Error(`模型服务暂时不可用（${response.status}）`);
-  const data = await response.json() as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
-  const text = data.output_text || data.output?.flatMap(item => item.content || []).map(item => item.text || "").join("") || "";
+  if (!response.ok) {
+    if (response.status === 429) throw new Error("Gemini 免费额度或请求频率暂时用完，请稍后再试");
+    if (response.status === 400 || response.status === 404) throw new Error("Gemini 模型或素材格式暂不支持，请检查模型设置或更换素材");
+    if (response.status === 401 || response.status === 403) throw new Error("Gemini API 密钥无效或尚未开通，请检查 Vercel 环境变量");
+    throw new Error(`Gemini 服务暂时不可用（${response.status}）`);
+  }
+  const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+  const text = data.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("") || "";
+  if (!text) throw new Error("Gemini 没有返回可用分析结果，请更换素材后重试");
   const parsed = JSON.parse(text) as Analysis;
   parsed.disclaimer = DISCLAIMER;
   return parsed;
@@ -64,8 +74,11 @@ export async function POST(request: Request) {
   const reportId = crypto.randomUUID(); const storageKey = `uploads/${reportId}/${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
   if (env.UPLOADS) await env.UPLOADS.put(storageKey, file.stream(), { httpMetadata: { contentType: file.type } });
   let mode = "demo"; let result: Analysis;
-  if (env.OPENAI_API_KEY) {
-    try { result = await liveAnalysis(preview, file.type, context, features); mode = "live"; }
+  if (env.GEMINI_API_KEY) {
+    if ((file.type.startsWith("audio/") || file.type.startsWith("image/")) && file.size > 14 * 1024 * 1024) {
+      return Response.json({ error: "Gemini 免费分析暂支持 14MB 以内的图片或音频，请压缩素材后重试" }, { status: 413 });
+    }
+    try { result = await geminiLiveAnalysis(preview, file, context, features); mode = "live"; }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "分析失败，请稍后重试" }, { status: 502 }); }
   } else result = demoAnalysis(file.type, context, features);
   const createdAt = new Date().toISOString();
